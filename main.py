@@ -14,7 +14,7 @@ load_dotenv()
 app = FastAPI()
 
 # Initialize AWS clients
-session = boto3.Session(profile_name="personal", region_name="us-east-1")
+session = boto3.Session(region_name="us-east-1")
 s3 = boto3.client('s3')
 bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
 
