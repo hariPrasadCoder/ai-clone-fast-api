@@ -7,11 +7,23 @@ from pinecone import Pinecone
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from typing import Optional
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
+from fastapi.middleware.cors import CORSMiddleware
+
+
 # Initialize FastAPI app
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Replace "*" with specific domains for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize AWS clients
 session = boto3.Session(region_name="us-east-1")
