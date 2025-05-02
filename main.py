@@ -3,6 +3,8 @@ from pydantic import BaseModel
 import boto3
 import os
 import json
+import csv
+import io
 from pinecone import Pinecone
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from typing import Optional
@@ -10,9 +12,6 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
-
-from fastapi.middleware.cors import CORSMiddleware
-
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -44,6 +43,10 @@ TEXT_SPLITTER = RecursiveCharacterTextSplitter(
 class UploadRequest(BaseModel):
     user_email: str
     linkedin_posts: str
+
+class CSVUploadRequest(BaseModel):
+    user_email: str
+    linkedin_posts_csv: str
 
 def process_and_store(user_email: str, text: str):
     """Background task handling both S3 upload and Pinecone storage"""
@@ -89,6 +92,37 @@ def process_and_store(user_email: str, text: str):
         print(f"Background processing failed: {str(e)}")
         # Implement your error handling logic here
 
+def process_csv_and_store(user_email: str, csv_content: str):
+    """Background task handling CSV processing, S3 upload and Pinecone storage"""
+    try:
+        # 1. Process CSV to extract text
+        csv_file = io.StringIO(csv_content)
+        csv_reader = csv.DictReader(csv_file)
+        
+        all_posts_text = ""
+        for row in csv_reader:
+            post_content = row.get('post_content', '')
+            post_url = row.get('post_url', '')
+            
+            if post_content:
+                all_posts_text += post_content + "\n\n"
+        
+        # 2. Upload raw CSV to S3
+        s3_csv_key = f"{user_email}/linkedin_posts.csv"
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=s3_csv_key,
+            Body=csv_content,
+            ContentType='text/csv'
+        )
+        
+        # 3. Process combined text same as before
+        process_and_store(user_email, all_posts_text)
+
+    except Exception as e:
+        print(f"CSV processing failed: {str(e)}")
+        # Implement your error handling logic here
+
 @app.post("/upload")
 async def upload_handler(request: UploadRequest, background_tasks: BackgroundTasks):
     """Main endpoint for LinkedIn post processing"""
@@ -103,6 +137,26 @@ async def upload_handler(request: UploadRequest, background_tasks: BackgroundTas
 
     return {
         "message": "Processing started",
+        "details": {
+            "user_email": request.user_email,
+            "status": "background_processing"
+        }
+    }
+
+@app.post("/upload-csv")
+async def upload_csv_handler(request: CSVUploadRequest, background_tasks: BackgroundTasks):
+    """Endpoint for LinkedIn post processing from CSV"""
+    if not request.user_email or not request.linkedin_posts_csv:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    background_tasks.add_task(
+        process_csv_and_store,
+        request.user_email,
+        request.linkedin_posts_csv
+    )
+
+    return {
+        "message": "CSV processing started",
         "details": {
             "user_email": request.user_email,
             "status": "background_processing"
