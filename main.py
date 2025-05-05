@@ -94,17 +94,40 @@ def process_and_store(user_email: str, text: str):
         print(f"Background processing failed: {str(e)}")
         # Implement your error handling logic here
 
-def to_date(relative: str, anchor=pd.Timestamp("today").normalize()):
-    """Convert strings like '3mo', '2w', '1d', '1yr' into a concrete date."""
-    if relative.endswith("d"):
-        return anchor - timedelta(days=int(relative[:-1]))
-    if relative.endswith("w"):
-        return anchor - timedelta(weeks=int(relative[:-1]))
+def to_date(relative: str, anchor: pd.Timestamp | None = None) -> pd.Timestamp:
+    """
+    Convert strings like
+        '3mo', '2w', '1d', '1yr', '5h', '30m'
+    into an absolute pandas.Timestamp.
+
+    If the suffix isn’t recognised, the function just returns the anchor itself.
+
+    Parameters
+    ----------
+    relative : str
+        The offset string.
+    anchor : pd.Timestamp, optional
+        Reference time to subtract from. Defaults to pd.Timestamp.now().
+    """
+    if anchor is None:
+        anchor = pd.Timestamp.now()
+
+    # Order matters: check longer suffixes before shorter ones.
     if relative.endswith("mo"):
         return anchor - relativedelta(months=int(relative[:-2]))
     if relative.endswith("yr"):
         return anchor - relativedelta(years=int(relative[:-2]))
-    raise ValueError(f"Unrecognised offset: {relative}")
+    if relative.endswith("w"):
+        return anchor - timedelta(weeks=int(relative[:-1]))
+    if relative.endswith("d"):
+        return anchor - timedelta(days=int(relative[:-1]))
+    if relative.endswith("h"):
+        return anchor - timedelta(hours=int(relative[:-1]))
+    if relative.endswith("m"):  # minutes (not 'mo')
+        return anchor - timedelta(minutes=int(relative[:-1]))
+
+    # Unrecognised suffix → keep anchor unchanged
+    return anchor
 
 def process_csv_and_store(user_email: str, csv_content: str):
     """Background task handling CSV processing, S3 upload and Pinecone storage"""
