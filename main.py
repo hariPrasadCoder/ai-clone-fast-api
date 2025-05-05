@@ -10,6 +10,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from typing import Optional
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+import pandas as pd
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 load_dotenv()
 
@@ -31,7 +34,7 @@ bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
 
 # Initialize Pinecone
 pc = Pinecone(api_key="pcsk_7JLSus_U3m4SxY6snjBuCB5KAqBXGMm2h5YrZkSicYdCqQhVwDCNVGrybyf26H8MQVDwTa")
-pinecone_index = pc.Index("user-posts")
+pinecone_index = pc.Index("user-posts-with-url")
 
 # Configuration
 BUCKET_NAME = "user-linkedin-posts-data"
@@ -85,27 +88,30 @@ def process_and_store(user_email: str, text: str):
 
         # 4. Store in Pinecone
         if vectors:
-            print(vectors)
             pinecone_index.upsert(vectors=vectors)
 
     except Exception as e:
         print(f"Background processing failed: {str(e)}")
         # Implement your error handling logic here
 
+def to_date(relative: str, anchor=pd.Timestamp("today").normalize()):
+    """Convert strings like '3mo', '2w', '1d', '1yr' into a concrete date."""
+    if relative.endswith("d"):
+        return anchor - timedelta(days=int(relative[:-1]))
+    if relative.endswith("w"):
+        return anchor - timedelta(weeks=int(relative[:-1]))
+    if relative.endswith("mo"):
+        return anchor - relativedelta(months=int(relative[:-2]))
+    if relative.endswith("yr"):
+        return anchor - relativedelta(years=int(relative[:-2]))
+    raise ValueError(f"Unrecognised offset: {relative}")
+
 def process_csv_and_store(user_email: str, csv_content: str):
     """Background task handling CSV processing, S3 upload and Pinecone storage"""
     try:
         # 1. Process CSV to extract text
-        csv_file = io.StringIO(csv_content)
-        csv_reader = csv.DictReader(csv_file)
-        
-        all_posts_text = ""
-        for row in csv_reader:
-            post_content = row.get('post_content', '')
-            post_url = row.get('post_url', '')
-            
-            if post_content:
-                all_posts_text += post_content + "\n\n"
+        df = pd.read_csv(io.StringIO(csv_content))
+        df["post_date"] = df["post_timestamp"].apply(to_date).astype(str)
         
         # 2. Upload raw CSV to S3
         s3_csv_key = f"{user_email}/linkedin_posts.csv"
@@ -116,8 +122,30 @@ def process_csv_and_store(user_email: str, csv_content: str):
             ContentType='text/csv'
         )
         
-        # 3. Process combined text same as before
-        process_and_store(user_email, all_posts_text)
+        vectors = []
+        for i, row in df.iterrows():
+            response = bedrock.invoke_model(
+                body=json.dumps({"inputText": row['post_content']}),
+                modelId="amazon.titan-embed-text-v2:0",
+                accept="application/json"
+            )
+            embedding = json.loads(response['body'].read())['embedding']
+            
+            vectors.append({
+                "id": f"{user_email}-{hash(row['post_content'])}",
+                "values": embedding,
+                "metadata": {
+                    "user_email": user_email,
+                    "text": row['post_content'],
+                    "source": f"s3://{BUCKET_NAME}/{s3_csv_key}",
+                    "post_url": row['post_url'],
+                    "post_date": row['post_date']
+                }
+            })
+
+        # 4. Store in Pinecone
+        if vectors:
+            pinecone_index.upsert(vectors=vectors)
 
     except Exception as e:
         print(f"CSV processing failed: {str(e)}")
